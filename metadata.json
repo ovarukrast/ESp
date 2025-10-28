@@ -1,0 +1,7 @@
+{
+  "name": "Generador de Fichas de Español",
+  "description": "Una aplicación web para generar fichas de ejercicios personalizadas para estudiantes de español utilizando la API de Gemini. Los usuarios pueden seleccionar el tema, el tipo de ejercicio y el nivel de dificultad para crear hojas de trabajo listas para imprimir.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
