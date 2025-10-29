@@ -1,7 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import { SpinnerIcon } from './icons/SpinnerIcon';
 import { MicrophoneIcon } from './icons/MicrophoneIcon';
 import { ExerciseType } from '../types';
+import { PenIcon } from './icons/PenIcon';
+import { PdfIcon } from './icons/PdfIcon';
+import { PrintIcon } from './icons/PrintIcon';
 
 // Web Speech API type definitions for TypeScript
 declare global {
@@ -13,7 +18,6 @@ declare global {
     continuous: boolean;
     interimResults: boolean;
     lang: string;
-    // Fix: Add missing 'maxAlternatives' property to SpeechRecognition interface.
     maxAlternatives: number;
     start(): void;
     stop(): void;
@@ -26,16 +30,13 @@ declare global {
   }
   interface SpeechRecognitionResultList {
     [index: number]: SpeechRecognitionResult;
-    // Fix: Add 'readonly' modifier to match built-in DOM type.
     readonly length: number;
   }
   interface SpeechRecognitionResult {
-    // Fix: Add 'readonly' modifier to match built-in DOM type.
     readonly isFinal: boolean;
     [index: number]: SpeechRecognitionAlternative;
   }
   interface SpeechRecognitionAlternative {
-    // Fix: Add 'readonly' modifier to match built-in DOM type.
     readonly transcript: string;
   }
   interface SpeechRecognitionErrorEvent extends Event {
@@ -88,8 +89,10 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
   const [userAnswers, setUserAnswers] = useState<Record<number, string>>({});
   const [showAnswers, setShowAnswers] = useState(false);
   const [score, setScore] = useState<{ correct: number; total: number } | null>(null);
-  const [usedWords, setUsedWords] = useState<Record<number, string[]>>({});
+  const [usedWords, setUsedWords] = useState<Record<number, {word: string, index: number}[]>>({});
   const [listeningQuestionIndex, setListeningQuestionIndex] = useState<number | null>(null);
+  const [isInteractiveMode, setIsInteractiveMode] = useState(false);
+  const sheetContentRef = useRef<HTMLDivElement>(null);
   
   const parsedContent = useMemo<ParsedContent | null>(() => {
     if (!content) return null;
@@ -106,6 +109,7 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
 
       const questions: ParsedQuestion[] = [];
       const questionRegex = /^(\d+)\.\s(.*)/;
+      const optionRegex = /^\([A-Z]\)/;
 
       let currentQuestion: ParsedQuestion | null = null;
       for (let i = 2; i < lines.length; i++) {
@@ -129,7 +133,9 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
           }
           
           currentQuestion = { number, text, type, options: [], words };
-        } else if (currentQuestion && currentQuestion.type === ExerciseType.MULTIPLE_CHOICE && /^\([A-Z]\)/.test(line)) {
+        } else if (currentQuestion && optionRegex.test(line)) {
+            // If we find an option, this must be a multiple choice question, even if the question text has a blank space.
+            currentQuestion.type = ExerciseType.MULTIPLE_CHOICE;
             currentQuestion.options?.push(line.trim());
         }
       }
@@ -152,17 +158,18 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
 
   useEffect(() => {
     handleReset();
+    setIsInteractiveMode(false);
   }, [content]);
 
   const handleAnswerChange = (qNumber: number, answer: string) => {
     setUserAnswers(prev => ({ ...prev, [qNumber]: answer }));
   };
   
-  const handleWordClick = (qNumber: number, word: string) => {
+  const handleWordClick = (qNumber: number, word: string, index: number) => {
     const currentAnswer = userAnswers[qNumber] || '';
     const newAnswer = currentAnswer ? `${currentAnswer} ${word}` : word;
     handleAnswerChange(qNumber, newAnswer);
-    setUsedWords(prev => ({...prev, [qNumber]: [...(prev[qNumber] || []), word]}));
+    setUsedWords(prev => ({...prev, [qNumber]: [...(prev[qNumber] || []), {word, index}]}));
   };
 
   const handleClearSentence = (qNumber: number) => {
@@ -198,6 +205,75 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
     setScore(null);
     setUsedWords({});
     setListeningQuestionIndex(null);
+  };
+  
+  const handleStartInteractive = () => {
+    setIsInteractiveMode(true);
+    handleReset();
+  };
+
+  const handleDownloadPdf = async () => {
+    const sheetElement = sheetContentRef.current;
+    if (!sheetElement || !parsedContent) return;
+  
+    // Temporarily set mode to non-interactive for PDF generation to get the print layout
+    const wasInteractive = isInteractiveMode;
+    if (wasInteractive) {
+      setIsInteractiveMode(false);
+      // Allow React to re-render to the non-interactive state
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = pdf.internal.pageSize.getHeight();
+    const marginX = 15;
+    const marginY = 20;
+    const contentWidth = pdfWidth - marginX * 2;
+    const pageContentHeight = pdfHeight - marginY; // Usable height considering bottom margin
+    let yPos = marginY;
+  
+    // Select all the main content blocks to be rendered
+    const elementsToRender = Array.from(sheetElement.querySelectorAll('h1, p, li'));
+  
+    for (const element of elementsToRender) {
+      const htmlElement = element as HTMLElement;
+      // Use a white background to prevent transparency issues from html2canvas
+      const canvas = await html2canvas(htmlElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+      });
+  
+      const imgData = canvas.toDataURL('image/png');
+      const imgProps = pdf.getImageProperties(imgData);
+  
+      const ratio = contentWidth / imgProps.width;
+      const imgHeight = imgProps.height * ratio;
+  
+      // Add a small gap between elements for better readability
+      // Fix: Use the `htmlElement` variable which is correctly typed as HTMLElement, as `element` is inferred as `unknown`.
+      const elementGap = (htmlElement.tagName === 'LI') ? 4 : 8;
+       if (elementsToRender.indexOf(element) > 0) {
+           yPos += elementGap;
+        }
+  
+      // Check if the element fits on the current page. If not, add a new page.
+      if (yPos + imgHeight > pageContentHeight) {
+        pdf.addPage();
+        yPos = marginY; // Reset position for the new page
+      }
+  
+      pdf.addImage(imgData, 'PNG', marginX, yPos, contentWidth, imgHeight);
+      yPos += imgHeight; // Update the Y position for the next element
+    }
+  
+    pdf.save(`${parsedContent.title.replace(/\s+/g, '_').toLowerCase()}.pdf`);
+  
+    // Restore the original interactive state if it was changed
+    if (wasInteractive) {
+      setIsInteractiveMode(true);
+    }
   };
 
   const handleDictation = (qNumber: number) => {
@@ -242,11 +318,11 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
 
   if (isLoading) {
     return (
-      <section className="bg-white p-8 rounded-lg shadow-lg border border-slate-200 min-h-[600px] flex items-center justify-center">
+      <section className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm min-h-[600px] flex items-center justify-center">
         <div className="text-center">
           <SpinnerIcon />
-          <p className="mt-4 text-slate-600 font-medium text-lg">Generando tu ficha de ejercicios...</p>
-          <p className="mt-2 text-sm text-slate-500">Esto puede tardar unos segundos...</p>
+          <p className="mt-4 text-gray-600 font-medium">Generando tu ficha de ejercicios...</p>
+          <p className="mt-1 text-sm text-gray-500">Esto puede tardar unos segundos...</p>
         </div>
       </section>
     );
@@ -254,10 +330,10 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
 
   if (error) {
     return (
-      <section className="bg-white p-8 rounded-lg shadow-lg border border-red-200 min-h-[600px] flex items-center justify-center">
+      <section className="bg-white p-8 rounded-2xl border border-rose-200 min-h-[600px] flex items-center justify-center">
         <div className="text-center">
-          <p className="text-2xl font-semibold text-red-700">Oops, algo salió mal</p>
-          <p className="mt-4 text-slate-700 bg-red-5 p-4 rounded-md text-left">{error}</p>
+          <p className="text-xl font-semibold text-rose-700">Oops, algo salió mal</p>
+          <p className="mt-4 text-gray-700 bg-rose-50 p-4 rounded-md text-left">{error}</p>
         </div>
       </section>
     );
@@ -265,145 +341,199 @@ export const ExerciseSheet: React.FC<ExerciseSheetProps> = ({
 
   if (!content || !parsedContent) {
     return (
-      <section className="bg-white p-8 rounded-lg shadow-lg border-2 border-dashed border-slate-300 min-h-[600px] flex items-center justify-center">
+      <section className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm min-h-[600px] flex items-center justify-center">
         <div className="text-center">
-            <span className="text-6xl" role="img" aria-label="writing-hand">✍️</span>
-          <h2 className="mt-6 text-2xl font-bold text-slate-800">Tu ficha de ejercicios aparecerá aquí</h2>
-          <p className="mt-2 text-slate-500 max-w-md mx-auto">Selecciona un tema, tipo de ejercicio y dificultad para empezar a aprender español de forma interactiva.</p>
+            <div className="flex justify-center mb-6">
+                <PenIcon />
+            </div>
+          <h2 className="mt-6 text-xl font-semibold text-gray-800">Tu ficha de ejercicios aparecerá aquí</h2>
+          <p className="mt-2 text-gray-500 max-w-md mx-auto">Selecciona un tema, tipo de ejercicio y dificultad para empezar a aprender español de forma interactiva.</p>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="bg-white p-8 rounded-lg shadow-lg border border-slate-200">
-      <h1 className="text-3xl font-bold mb-2">{parsedContent.title}</h1>
-      <p className="text-slate-600 mb-8">{parsedContent.instruction}</p>
-      
-      <div className="space-y-8">
-        {parsedContent.questions.map(q => {
-          const userAnswer = userAnswers[q.number] || '';
-          const correctAnswerKey = parsedContent.answers[q.number] || '';
-          
-          let isCorrect = false;
-          if (showAnswers) {
-              if (q.type === ExerciseType.SENTENCE_ORDERING) {
-                  isCorrect = checkSentenceOrderingAnswer(correctAnswerKey, userAnswer);
-              } else {
-                  isCorrect = userAnswer.trim().toLowerCase() === correctAnswerKey.trim().toLowerCase();
-              }
-          }
-
-          const questionClass = showAnswers 
-            ? `p-4 rounded-lg border-2 ${isCorrect ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500'}`
-            : 'p-4 rounded-lg border border-slate-200';
-          
-          return (
-            <div key={q.number} className={questionClass}>
-              <div className="font-semibold text-slate-800 mb-4 text-lg">
-                {q.type === ExerciseType.FILL_IN_THE_BLANK 
-                  ? q.text.split('[___]').map((part, i, arr) => (
-                      <React.Fragment key={i}>
-                        {part}
-                        {i < arr.length - 1 && (
-                            <div className="inline-flex items-center mx-2">
-                                <input
-                                    type="text"
-                                    value={userAnswer}
-                                    onChange={(e) => handleAnswerChange(q.number, e.target.value)}
-                                    disabled={showAnswers}
-                                    className="border-b-2 border-slate-400 focus:border-blue-500 outline-none w-32 px-1 py-0.5 bg-transparent"
-                                />
-                                <button onClick={() => handleDictation(q.number)} disabled={showAnswers || listeningQuestionIndex !== null} className="ml-2 text-slate-500 hover:text-blue-600 disabled:text-slate-300 relative">
-                                    <MicrophoneIcon />
-                                    {listeningQuestionIndex === q.number && (
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                                    )}
-                                </button>
-                            </div>
-                        )}
-                      </React.Fragment>
-                  ))
-                  : `${q.number}. ${q.text}`
+    <section className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm">
+      <div ref={sheetContentRef}>
+        <style>{`.break-inside-avoid { break-inside: avoid; }`}</style>
+        <h1 className="text-3xl font-bold text-gray-900 mb-2">{parsedContent.title}</h1>
+        <p className="text-gray-600 mb-8 text-base">{parsedContent.instruction}</p>
+        
+        <ul className="divide-y divide-gray-100">
+          {parsedContent.questions.map(q => {
+            const userAnswer = userAnswers[q.number] || '';
+            const correctAnswerKey = parsedContent.answers[q.number] || '';
+            
+            let isCorrect = false;
+            if (showAnswers) {
+                if (q.type === ExerciseType.SENTENCE_ORDERING) {
+                    isCorrect = checkSentenceOrderingAnswer(correctAnswerKey, userAnswer);
+                } else {
+                    isCorrect = userAnswer.trim().toLowerCase() === correctAnswerKey.trim().toLowerCase();
                 }
-              </div>
+            }
 
-              {q.type === ExerciseType.MULTIPLE_CHOICE && (
-                <div className="space-y-2">
-                  {q.options?.map(option => (
-                    <label key={option} className="flex items-center p-3 rounded-md hover:bg-slate-100 cursor-pointer">
-                      <input 
-                        type="radio" 
-                        name={`q-${q.number}`} 
-                        value={option.substring(4).trim()}
-                        checked={userAnswer === option.substring(4).trim()}
-                        onChange={(e) => handleAnswerChange(q.number, e.target.value)}
-                        disabled={showAnswers}
-                        className="mr-3"
-                      />
-                      {option}
-                    </label>
-                  ))}
-                </div>
-              )}
-              
-              {q.type === ExerciseType.SENTENCE_ORDERING && (
-                 <div>
-                    <div className="p-4 mb-4 min-h-[50px] bg-slate-100 rounded-md border border-slate-300 text-slate-800 font-medium">
-                        {userAnswer || <span className="text-slate-400">Construye la frase aquí...</span>}
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                        {q.words?.map((word, i) => {
-                            const isUsed = usedWords[q.number]?.includes(word);
-                            return (
-                                <button
-                                    key={`${word}-${i}`}
-                                    onClick={() => handleWordClick(q.number, word)}
-                                    disabled={showAnswers || isUsed}
-                                    className="px-3 py-1.5 bg-blue-100 text-blue-800 rounded-md hover:bg-blue-200 disabled:bg-slate-200 disabled:text-slate-500 disabled:cursor-not-allowed"
-                                >
-                                    {word}
+            const questionClass = showAnswers 
+              ? `py-6 px-4 -mx-4 transition-colors break-inside-avoid ${isCorrect ? 'bg-emerald-50' : 'bg-rose-50'}`
+              : 'py-6 break-inside-avoid';
+            
+            return (
+              <li key={q.number} className={questionClass}>
+                <div className="font-medium text-gray-800 mb-4 text-base">
+                  {q.type === ExerciseType.FILL_IN_THE_BLANK ? (
+                    <>
+                      <span>{`${q.number}. `}</span>
+                      {q.text.split('[___]').map((part, i, arr) => (
+                        <React.Fragment key={i}>
+                          <span>{part}</span>
+                          {i < arr.length - 1 && (
+                            isInteractiveMode ? (
+                              <div className="inline-flex items-center mx-2">
+                                <input
+                                  type="text"
+                                  value={userAnswer}
+                                  onChange={(e) => handleAnswerChange(q.number, e.target.value)}
+                                  disabled={showAnswers}
+                                  className="border border-gray-300 rounded-md shadow-sm w-48 px-3 py-1.5 bg-gray-50 focus:ring-indigo-500 focus:border-indigo-500"
+                                />
+                                <button onClick={() => handleDictation(q.number)} disabled={showAnswers || listeningQuestionIndex !== null} className="ml-2 text-gray-400 hover:text-indigo-600 disabled:text-gray-300 relative p-1 rounded-full hover:bg-gray-100 transition-colors">
+                                  <MicrophoneIcon />
+                                  {listeningQuestionIndex === q.number && (
+                                    <span className="animate-ping absolute top-0 left-0 inline-flex h-full w-full rounded-full bg-rose-500 opacity-75"></span>
+                                  )}
                                 </button>
+                              </div>
+                            ) : (
+                              <span className="inline-block border-b-2 border-dotted border-gray-400 w-48 h-6 align-bottom mx-2"></span>
                             )
-                        })}
-                        <button onClick={() => handleClearSentence(q.number)} disabled={showAnswers} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300 disabled:opacity-50">Limpiar</button>
-                    </div>
-                 </div>
-              )}
-
-              {showAnswers && !isCorrect && (
-                <div className="mt-3 text-sm font-semibold text-green-800 p-2 bg-green-100 rounded-md">
-                  Respuesta correcta: {getPrimaryAnswer(correctAnswerKey)}
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </>
+                  ) : (
+                    `${q.number}. ${q.text}`
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
+
+                {q.type === ExerciseType.MULTIPLE_CHOICE && (
+                  isInteractiveMode ? (
+                    <div className="space-y-3">
+                      {q.options?.map((option, index) => (
+                        <label key={option} className={`flex items-center p-3 rounded-lg border transition-all cursor-pointer ${userAnswer === option.substring(4).trim() ? 'bg-indigo-50 border-indigo-300' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                          <input 
+                            type="radio" 
+                            id={`q-${q.number}-${index}`}
+                            name={`q-${q.number}`} 
+                            value={option.substring(4).trim()}
+                            checked={userAnswer === option.substring(4).trim()}
+                            onChange={(e) => handleAnswerChange(q.number, e.target.value)}
+                            disabled={showAnswers}
+                            className="peer/radio sr-only"
+                          />
+                          <div className="h-5 w-5 rounded-full border-2 border-gray-300 peer-checked/radio:border-indigo-600 bg-white flex items-center justify-center flex-shrink-0">
+                              <div className="h-2.5 w-2.5 rounded-full bg-indigo-600 scale-0 peer-checked/radio:scale-100 transition-transform"></div>
+                          </div>
+                          <span className="ml-3 text-sm text-gray-700">{option}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                     <div className="flex flex-row flex-wrap gap-x-6 gap-y-2 text-gray-700">
+                      {q.options?.map((option, index) => (
+                          <span key={index} className="text-sm">{option}</span>
+                      ))}
+                    </div>
+                  )
+                )}
+                
+                {q.type === ExerciseType.SENTENCE_ORDERING && (
+                  isInteractiveMode ? (
+                    <div>
+                        <div className="p-3 mb-4 min-h-[48px] bg-gray-50 rounded-lg border border-gray-200 text-gray-800 font-medium flex items-center">
+                            {userAnswer || <span className="text-gray-400">Construye la frase aquí...</span>}
+                        </div>
+                        <div className="flex flex-wrap gap-2 items-center">
+                            {q.words?.map((word, i) => {
+                                const isUsed = usedWords[q.number]?.some(used => used.index === i);
+                                return (
+                                    <button
+                                        key={`${word}-${i}`}
+                                        onClick={() => handleWordClick(q.number, word, i)}
+                                        disabled={showAnswers || isUsed}
+                                        className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-100 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                        {word}
+                                    </button>
+                                )
+                            })}
+                            <button onClick={() => handleClearSentence(q.number)} disabled={showAnswers} className="text-sm text-indigo-600 hover:text-indigo-800 hover:underline disabled:opacity-50 ml-2">Limpiar</button>
+                        </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-gray-500 italic">
+                        {q.text}
+                    </div>
+                  )
+                )}
+
+                {showAnswers && !isCorrect && (
+                  <div className="mt-4 text-sm font-medium text-emerald-800 p-3 bg-emerald-100/70 rounded-lg">
+                    Respuesta correcta: {getPrimaryAnswer(correctAnswerKey)}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
-      <div className="mt-10 pt-6 border-t flex items-center justify-between gap-4">
-        <div>
-          {score && (
-             <p className="text-xl font-bold text-slate-800">
-                Puntuación: {score.correct} / {score.total}
-             </p>
-          )}
-        </div>
-        <div className="flex gap-4">
-          <button
-            onClick={handleReset}
-            className="bg-slate-200 text-slate-800 hover:bg-slate-300 font-bold py-2 px-6 rounded-lg transition-colors"
-          >
-            Reiniciar
-          </button>
-          <button
-            onClick={handleCheckAnswers}
-            disabled={!isAllAnswered || showAnswers}
-            className="bg-blue-600 text-white hover:bg-blue-700 font-bold py-2 px-6 rounded-lg transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed"
-          >
-            Revisar Respuestas
-          </button>
-        </div>
+      <div className="mt-10 pt-6 border-t border-gray-100 flex items-center justify-between gap-4 flex-wrap print:hidden">
+        {isInteractiveMode ? (
+            <>
+                <div>
+                    {score && (
+                        <p className="text-lg font-bold text-gray-800">
+                        Puntuación: <span className="text-indigo-600">{score.correct} / {score.total}</span>
+                        </p>
+                    )}
+                </div>
+                <div className="flex gap-4">
+                <button
+                    onClick={handleReset}
+                    className="bg-white text-gray-800 border border-gray-300 hover:bg-gray-50 font-semibold py-2 px-5 rounded-lg transition-colors text-sm shadow-sm"
+                >
+                    Reiniciar
+                </button>
+                <button
+                    onClick={handleCheckAnswers}
+                    disabled={!isAllAnswered || showAnswers}
+                    className="bg-indigo-600 text-white hover:bg-indigo-700 font-semibold py-2 px-5 rounded-lg transition-colors disabled:bg-indigo-300 disabled:cursor-not-allowed text-sm shadow-sm"
+                >
+                    Revisar Respuestas
+                </button>
+                </div>
+            </>
+        ) : (
+            <div className="flex w-full justify-end">
+                <div className="flex gap-4">
+                    <button
+                        onClick={handleDownloadPdf}
+                        className="flex items-center gap-2 bg-white text-gray-800 border border-gray-300 hover:bg-gray-50 font-semibold py-2 px-5 rounded-lg transition-colors text-sm shadow-sm"
+                    >
+                        <PdfIcon />
+                        Descargar PDF
+                    </button>
+                    <button
+                        onClick={handleStartInteractive}
+                        className="flex items-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700 font-semibold py-2 px-5 rounded-lg transition-colors text-sm shadow-sm"
+                    >
+                        <PrintIcon />
+                        Resolver Interactivo
+                    </button>
+                </div>
+            </div>
+        )}
       </div>
 
     </section>

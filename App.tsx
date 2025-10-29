@@ -40,11 +40,11 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans">
+    <div className="min-h-screen bg-gray-50">
       <Header />
-      <main className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
-          <div className="lg:col-span-1 lg:sticky lg:top-8">
+      <main className="max-w-7xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-10 items-start">
+          <div className="lg:col-span-1 lg:sticky lg:top-10">
             <Controls onGenerate={handleGenerate} isLoading={isLoading} />
           </div>
           <div className="lg:col-span-2">
