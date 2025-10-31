@@ -9,6 +9,8 @@ function App() {
   const [exerciseSheetContent, setExerciseSheetContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentTopic, setCurrentTopic] = useState<string>('');
+  const [currentDifficulty, setCurrentDifficulty] = useState<Difficulty | null>(null);
 
   const handleGenerate = async (
     topic: string,
@@ -19,6 +21,8 @@ function App() {
     setIsLoading(true);
     setError(null);
     setExerciseSheetContent('');
+    setCurrentTopic(topic);
+    setCurrentDifficulty(difficulty);
 
     try {
       const content = await generateExerciseSheet(
@@ -40,7 +44,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-100">
       <Header />
       <main className="max-w-7xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-10 items-start">
@@ -50,6 +54,8 @@ function App() {
           <div className="lg:col-span-2">
             <ExerciseSheet 
               content={exerciseSheetContent} 
+              topic={currentTopic}
+              difficulty={currentDifficulty}
               isLoading={isLoading}
               error={error}
             />
